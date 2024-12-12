@@ -3,8 +3,10 @@
 
 ## Roadmap
 V1 : Patch actuals bugs
-V1.1 : Adding password
-V1.2 : *nothing now*
+
+V1.1 : adding better generation
+
+V1.2 : adding build
 
 ## Patch note 
 V1 : Original version
