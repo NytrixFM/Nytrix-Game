@@ -4,7 +4,7 @@
 ## Roadmap
 V1 : Patch actuals bugs
 
-V1.1 : adding better generation
+V1.1 : adding better generation + biomes
 
 V1.2 : adding build
 
