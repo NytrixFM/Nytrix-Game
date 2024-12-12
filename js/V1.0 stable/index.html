@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Procedural Map</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <script type="module">
+        // Importation des modules et création de la scène 3D
+        import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.154.0/build/three.module.js';
+        import SimplexNoise from 'https://cdn.jsdelivr.net/npm/simplex-noise@3.0.0/dist/esm/simplex-noise.js';
+
+        // Scene setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB); // Set background to sky blue
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Variables
+        const CHUNK_SIZE = 10;
+        const BLOCK_SIZE = 16;
+        const MAP_RADIUS = 4; // Number of chunks in view radius
+        const HEIGHT_MULTIPLIER = 4;
+        const PLAYER_HEIGHT = 2.5 * BLOCK_SIZE;
+        const playerSpeed = 100000000000;
+        const jumpStrength = 10;
+        const blocks = [];
+        const loadedChunks = new Map();
+        const chunkCache = new Set();
+
+        // Noise generation
+        const noise = new SimplexNoise();
+        function generateHeight(x, z) {
+            return Math.max(1, Math.floor(noise.noise2D(x / 10, z / 10) * HEIGHT_MULTIPLIER));
+        }
+
+        // Generate texture for blocks
+        const blockCanvas = document.createElement('canvas');
+        blockCanvas.width = 64;
+        blockCanvas.height = 64;
+        const blockContext = blockCanvas.getContext('2d');
+
+        blockContext.fillStyle = '#888';
+        blockContext.fillRect(0, 0, 64, 64);
+        blockContext.fillStyle = '#ccc';
+        blockContext.fillRect(0, 0, 32, 32);
+        blockContext.fillRect(32, 32, 32, 32);
+
+        blockContext.strokeStyle = '#000';
+        blockContext.lineWidth = 2;
+        blockContext.strokeRect(0, 0, 64, 64);
+
+        const blockTexture = new THREE.CanvasTexture(blockCanvas);
+
+        // Generate chunk
+        function generateChunk(chunkX, chunkZ) {
+            const chunkKey = `${chunkX},${chunkZ}`;
+            if (loadedChunks.has(chunkKey)) return;
+
+            const chunk = new THREE.Group();
+            for (let x = 0; x < CHUNK_SIZE; x++) {
+                for (let z = 0; z < CHUNK_SIZE; z++) {
+                    const worldX = chunkX * CHUNK_SIZE + x;
+                    const worldZ = chunkZ * CHUNK_SIZE + z;
+                    const height = generateHeight(worldX, worldZ);
+
+                    for (let y = 0; y < height; y++) {
+                        const geometry = new THREE.BoxGeometry(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+                        const material = new THREE.MeshBasicMaterial({ map: blockTexture });
+                        const block = new THREE.Mesh(geometry, material);
+                        block.position.set(worldX * BLOCK_SIZE, y * BLOCK_SIZE, worldZ * BLOCK_SIZE);
+                        chunk.add(block);
+                        blocks.push(block);
+                    }
+                }
+            }
+
+            scene.add(chunk);
+            loadedChunks.set(chunkKey, chunk);
+            chunkCache.add(chunkKey);
+        }
+
+        // Remove chunks too far from player
+        function cleanupChunks(playerChunkX, playerChunkZ) {
+            for (const chunkKey of Array.from(loadedChunks.keys())) {
+                const [chunkX, chunkZ] = chunkKey.split(',').map(Number);
+                const distance = Math.max(
+                    Math.abs(chunkX - playerChunkX),
+                    Math.abs(chunkZ - playerChunkZ)
+                );
+                if (distance > MAP_RADIUS) {
+                    const chunk = loadedChunks.get(chunkKey);
+                    scene.remove(chunk);
+                    loadedChunks.delete(chunkKey);
+                }
+            }
+        }
+
+        // Player setup
+        const playerGeometry = new THREE.BoxGeometry(BLOCK_SIZE, PLAYER_HEIGHT, BLOCK_SIZE);
+        const playerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+        const player = new THREE.Mesh(playerGeometry, playerMaterial);
+        player.position.set(0, PLAYER_HEIGHT / 2, 0);
+        scene.add(player);
+
+        // Controls
+        let velocity = new THREE.Vector3();
+        let canJump = false;
+        const keys = { 'KeyW': false, 'KeyA': false, 'KeyS': false, 'KeyD': false, 'Space': false };
+
+        window.addEventListener('keydown', (e) => { if (keys.hasOwnProperty(e.code)) keys[e.code] = true; });
+        window.addEventListener('keyup', (e) => { if (keys.hasOwnProperty(e.code)) keys[e.code] = false; });
+        window.addEventListener('mousemove', (e) => {
+            const rotationSpeed = 0.005;
+            camera.rotation.y -= e.movementX * rotationSpeed;
+        });
+
+        // Camera follows player at head level
+        function updateCameraPosition() {
+            // Set camera position to be slightly above the player's head
+            camera.position.set(
+                player.position.x,
+                player.position.y + PLAYER_HEIGHT / 2, // Camera at head level
+                player.position.z
+            );
+        }
+
+        function checkCollision(position) {
+            for (const block of blocks) {
+                const box = new THREE.Box3().setFromObject(block);
+                if (box.containsPoint(position)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function checkGroundCollision(position) {
+            // Check if there's a block just below the player (position.y - 1)
+            const groundPosition = position.clone().setY(position.y - 1); // Position just below the player
+            return checkCollision(groundPosition);
+        }
+
+        function updatePlayer() {
+            velocity.set(0, velocity.y, 0); // Reset horizontal velocity when no keys are pressed
+
+            // Movement
+            const forward = new THREE.Vector3(
+                Math.sin(camera.rotation.y),
+                0,
+                Math.cos(camera.rotation.y)
+            ).normalize();
+            const right = new THREE.Vector3(
+                Math.cos(camera.rotation.y),
+                0,
+                -Math.sin(camera.rotation.y)
+            ).normalize();
+
+            if (keys['KeyW']) velocity.add(forward.multiplyScalar(-playerSpeed)); // Inverted W
+            if (keys['KeyS']) velocity.add(forward.multiplyScalar(playerSpeed));  // Inverted S
+            if (keys['KeyA']) velocity.add(right.multiplyScalar(-playerSpeed));
+            if (keys['KeyD']) velocity.add(right.multiplyScalar(playerSpeed));
+
+            // Gravity
+            velocity.y -= 0.5;
+
+            // Jump
+            if (keys['Space'] && canJump && checkGroundCollision(player.position)) {
+                velocity.y = jumpStrength;  // Apply jump force
+                canJump = false;  // Player can't jump again until they're on the ground
+            }
+
+            const nextPosition = player.position.clone().add(velocity);
+
+            // Horizontal collision detection
+            const collisionDetected = checkCollision(new THREE.Vector3(nextPosition.x, player.position.y, nextPosition.z));
+
+            if (!collisionDetected) {
+                player.position.x = nextPosition.x;
+                player.position.z = nextPosition.z;
+            }
+
+            const verticalCollision = checkCollision(new THREE.Vector3(player.position.x, nextPosition.y, player.position.z));
+
+            if (!verticalCollision) {
+                player.position.y = nextPosition.y;
+            } else {
+                velocity.y = 0;
+                if (nextPosition.y < player.position.y) {
+                    canJump = true;  // Player can jump again once they're touching the ground
+                }
+            }
+
+            // Update camera position for first-person perspective
+            updateCameraPosition();
+        }
+
+        // Animation loop
+        function animate() {
+            const playerChunkX = Math.floor(player.position.x / (CHUNK_SIZE * BLOCK_SIZE));
+            const playerChunkZ = Math.floor(player.position.z / (CHUNK_SIZE * BLOCK_SIZE));
+
+            // Generate new chunks around the player
+            for (let x = -MAP_RADIUS; x <= MAP_RADIUS; x++) {
+                for (let z = -MAP_RADIUS; z <= MAP_RADIUS; z++) {
+                    generateChunk(playerChunkX + x, playerChunkZ + z);
+                }
+            }
+
+            // Clean up far chunks
+            cleanupChunks(playerChunkX, playerChunkZ);
+
+            requestAnimationFrame(animate);
+            updatePlayer();
+            renderer.render(scene, camera);
+        }
+
+        animate();
+    </script>
+</body>
+</html>
